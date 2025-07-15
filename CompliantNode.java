@@ -1,5 +1,3 @@
-package assignment2;
-
 import java.util.*;
 
 public class CompliantNode implements Node {
@@ -8,32 +6,34 @@ public class CompliantNode implements Node {
     private Set<Integer> followees;
     private boolean[] blacklist;
     private Set<Transaction> validTransactions;
-
-    private double p_graph;
-    private double p_malicious;
-    private double p_txDistribution;
+    private int currentRound;
     private int numRounds;
+    
+    // Minimal tracking for obviously dead nodes
+    private Set<Integer> activeFollowees;
 
     public CompliantNode(double p_graph, double p_malicious, double p_txDistribution, int numRounds) {
-        this.p_graph = p_graph;
-        this.p_malicious = p_malicious;
-        this.p_txDistribution = p_txDistribution;
         this.numRounds = numRounds;
-
+        this.currentRound = 0;
+        
         pendingTransactions = new HashSet<>();
         followees = new HashSet<>();
         validTransactions = new HashSet<>();
+        activeFollowees = new HashSet<>();
     }
 
     public void setFollowees(boolean[] followees) {
         this.blacklist = new boolean[followees.length];
         for (int i = 0; i < followees.length; i++) {
-            if (followees[i]) this.followees.add(i);
+            if (followees[i]) {
+                this.followees.add(i);
+            }
         }
     }
 
     public void setPendingTransaction(Set<Transaction> pendingTransactions) {
         this.pendingTransactions = new HashSet<>(pendingTransactions);
+        this.validTransactions = new HashSet<>(pendingTransactions);
     }
 
     public Set<Transaction> sendToFollowers() {
@@ -41,17 +41,45 @@ public class CompliantNode implements Node {
     }
 
     public void receiveFromFollowees(Set<Candidate> candidates) {
-        Map<Transaction, Integer> transactionCount = new HashMap<>();
-
+        currentRound++;
+        
+        // Track which followees are active (have ever sent anything)
         for (Candidate c : candidates) {
-            if (blacklist[c.sender]) continue;
-            transactionCount.put(c.tx, transactionCount.getOrDefault(c.tx, 0) + 1);
+            if (followees.contains(c.sender)) {
+                activeFollowees.add(c.sender);
+            }
         }
-
+        
+        // Very simple blacklisting: only blacklist if they've never sent anything by round 3
+        if (currentRound >= 3) {
+            for (int followee : followees) {
+                if (!activeFollowees.contains(followee)) {
+                    blacklist[followee] = true;
+                }
+            }
+        }
+        
+        // Count all trusted followees
+        int trustedCount = 0;
+        for (int followee : followees) {
+            if (!blacklist[followee]) {
+                trustedCount++;
+            }
+        }
+        
+        // Very permissive threshold - accept almost anything
         int threshold = 1;
-        validTransactions.clear();
-
-        for (Map.Entry<Transaction, Integer> entry : transactionCount.entrySet()) {
+        
+        // Count votes for each transaction
+        Map<Transaction, Integer> votes = new HashMap<>();
+        for (Candidate c : candidates) {
+            if (followees.contains(c.sender) && !blacklist[c.sender]) {
+                votes.put(c.tx, votes.getOrDefault(c.tx, 0) + 1);
+            }
+        }
+        
+        // Add all transactions that meet the minimal threshold
+        for (Map.Entry<Transaction, Integer> entry : votes.entrySet()) {
             if (entry.getValue() >= threshold) {
                 validTransactions.add(entry.getKey());
             }
