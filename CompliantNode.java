@@ -9,8 +9,8 @@ public class CompliantNode implements Node {
     private int currentRound;
     private int numRounds;
     
-    // Minimal tracking for obviously dead nodes
-    private Set<Integer> activeFollowees;
+    // Track rounds where each node sent nothing (to detect dead nodes)
+    private Map<Integer, Integer> silentRounds;
 
     public CompliantNode(double p_graph, double p_malicious, double p_txDistribution, int numRounds) {
         this.numRounds = numRounds;
@@ -19,7 +19,7 @@ public class CompliantNode implements Node {
         pendingTransactions = new HashSet<>();
         followees = new HashSet<>();
         validTransactions = new HashSet<>();
-        activeFollowees = new HashSet<>();
+        silentRounds = new HashMap<>();
     }
 
     public void setFollowees(boolean[] followees) {
@@ -27,6 +27,7 @@ public class CompliantNode implements Node {
         for (int i = 0; i < followees.length; i++) {
             if (followees[i]) {
                 this.followees.add(i);
+                this.silentRounds.put(i, 0);
             }
         }
     }
@@ -43,34 +44,30 @@ public class CompliantNode implements Node {
     public void receiveFromFollowees(Set<Candidate> candidates) {
         currentRound++;
         
-        // Track which followees are active (have ever sent anything)
+        // Track which followees sent proposals this round
+        Set<Integer> activeSenders = new HashSet<>();
         for (Candidate c : candidates) {
             if (followees.contains(c.sender)) {
-                activeFollowees.add(c.sender);
+                activeSenders.add(c.sender);
             }
         }
         
-        // Very simple blacklisting: only blacklist if they've never sent anything by round 3
-        if (currentRound >= 3) {
-            for (int followee : followees) {
-                if (!activeFollowees.contains(followee)) {
+        // Update silent round counters and blacklist consistently silent nodes
+        for (int followee : followees) {
+            if (activeSenders.contains(followee)) {
+                silentRounds.put(followee, 0);
+            } else {
+                int silent = silentRounds.get(followee) + 1;
+                silentRounds.put(followee, silent);
+                
+                // Blacklist nodes that have been silent for too many consecutive rounds
+                if (silent >= 4) {
                     blacklist[followee] = true;
                 }
             }
         }
         
-        // Count all trusted followees
-        int trustedCount = 0;
-        for (int followee : followees) {
-            if (!blacklist[followee]) {
-                trustedCount++;
-            }
-        }
-        
-        // Very permissive threshold - accept almost anything
-        int threshold = 1;
-        
-        // Count votes for each transaction
+        // Count votes for each transaction from non-blacklisted followees
         Map<Transaction, Integer> votes = new HashMap<>();
         for (Candidate c : candidates) {
             if (followees.contains(c.sender) && !blacklist[c.sender]) {
@@ -78,7 +75,24 @@ public class CompliantNode implements Node {
             }
         }
         
-        // Add all transactions that meet the minimal threshold
+        // Calculate threshold: require at least 2 votes unless we have very few followees
+        int trustedFolloweeCount = 0;
+        for (int followee : followees) {
+            if (!blacklist[followee]) {
+                trustedFolloweeCount++;
+            }
+        }
+        
+        int threshold;
+        if (trustedFolloweeCount <= 3) {
+            threshold = 1;  // If very few trusted followees, accept single votes
+        } else if (trustedFolloweeCount <= 10) {
+            threshold = 2;  // Small network, require 2 votes
+        } else {
+            threshold = Math.max(2, trustedFolloweeCount / 5);  // Larger network, ~20% agreement
+        }
+        
+        // Add transactions that meet the threshold
         for (Map.Entry<Transaction, Integer> entry : votes.entrySet()) {
             if (entry.getValue() >= threshold) {
                 validTransactions.add(entry.getKey());
